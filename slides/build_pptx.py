@@ -9,6 +9,8 @@ and the numbers update themselves.
 
 Design intent: one idea per slide, one number large enough to read from the back of
 the room, and body text kept under ~45 words. The house colour is a single constant.
+Cards size themselves to their content (see ``card``) so text can never be clipped
+by the panel it sits in.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -31,6 +34,8 @@ OUT = Path(__file__).resolve().parent / "ME344_Final_Arnold_Hambuch.pptx"
 ORANGE = RGBColor(0xE8, 0x59, 0x0C)
 ORANGE_L = RGBColor(0xFB, 0x92, 0x3C)
 TINT = RGBColor(0xFE, 0xF3, 0xEA)
+RED = RGBColor(0xDC, 0x26, 0x26)
+RED_TINT = RGBColor(0xFE, 0xF2, 0xF2)
 INK = RGBColor(0x15, 0x17, 0x1A)
 GREY = RGBColor(0x71, 0x7A, 0x85)
 FAINT = RGBColor(0xE6, 0xE9, 0xEC)
@@ -38,6 +43,10 @@ WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 FONT = "Helvetica Neue"
 
 W, H = Inches(13.333), Inches(7.5)
+
+# Shapes whose box deliberately overhangs: the ghost slide number is a
+# right-aligned box, so its frame reaches the margin while its glyph does not.
+EXEMPT = set()
 
 
 def load(n):
@@ -62,8 +71,16 @@ sp_g, sp_t = c_s / g_s, c_s / t_s
 gt = abs(g_s - t_s) / t_s * 100
 bp, mp = base["phases"], mit["phases"]
 compute_pct = bp["steady_state_s"] / bp["total_wall_s"] * 100
+load_pct = bp["model_load_s"] / bp["total_wall_s"] * 100
 load_x = bp["model_load_s"] / mp["model_load_s"]
 wall_cut = (1 - mp["total_wall_s"] / bp["total_wall_s"]) * 100
+
+# Utilisation and memory for the like-for-like row. The TPU exposes memory
+# statistics but no core-utilisation counter, so that cell says so rather than
+# borrowing a number that means something else.
+u_cpu = cpu["utilization"]["mean_pct"]
+u_gpu = gpu["utilization"]["mean_pct"]
+m_cpu, m_gpu, m_tpu = (r["memory"]["peak_pct"] for r in (cpu, gpu, tpu))
 
 # The 4B sweep: the comparison at an operating point where both chips are busy.
 g4 = {r["config"]["batch_size"]: r for r in recs.values()
@@ -75,30 +92,29 @@ g8, t8 = g4[8]["steady"]["tokens_per_s"], t4[8]["steady"]["tokens_per_s"]
 g16, t16 = g4[16]["steady"]["tokens_per_s"], t4[16]["steady"]["tokens_per_s"]
 g32 = g4[32]["steady"]["tokens_per_s"]
 load_ratio = g16 / t16
+
+# The last configuration that fits, per backend, and the one that does not.
+def ceiling(pool):
+    ok = {b: r for b, r in pool.items() if r["status"] == "ok"}
+    died = sorted(b for b, r in pool.items() if r["status"] == "oom")
+    top = max(ok)
+    return ok[top]["memory"]["peak_pct"], top, (died[0] if died else None)
+
+
+mem_gpu, bs_gpu, oom_gpu = ceiling(g4)
+mem_tpu, bs_tpu, oom_tpu = ceiling(t4)
+
 _c = {c["run_id"]: c["usd_per_1000_steps"] for c in load("analysis")["cost"]["per_run"]}
 k4_gpu = _c["gpu-gh200-bs8-seq1024"]
 k4_tpu = _c["tpu-v5e8-bs8-seq1024-filecache"]
 cost_ratio_4b = k4_tpu / k4_gpu
 
-cost = {c["run_id"]: c for c in load("analysis")["cost"]["per_run"]}
-k_cpu = cost[cpu["run_id"]]["usd_per_1000_steps"]
-k_gpu = cost[gpu["run_id"]]["usd_per_1000_steps"]
-k_tpu = cost[tpu["run_id"]]["usd_per_1000_steps"]
-
 stats = json.loads((REPO / "docs" / "dataset_stats.json").read_text())
-loss = {e["seq_len"]: e["frac_completion_fully_lost"] * 100
-        for e in stats["splits"]["train"]["truncation"]}
-
-# GPU sweep cells, if the sweep has landed
-gpu_sweep = sorted(
-    ((r["config"]["batch_size"], r) for r in recs.values()
-     if r["backend"] == "gpu" and r["config"]["model"].endswith("4B")),
-    key=lambda t: t[0])
-tpu_sweep = sorted(
-    ((r["config"]["batch_size"], r) for r in recs.values()
-     if r["backend"] == "tpu" and r["config"]["model"].endswith("4B")
-     and r["config"]["seq_len"] == 1024),
-    key=lambda t: t[0])
+tok = stats["splits"]["train"]["tokens"]["total"]
+n_train = stats["splits"]["train"]["n_docs"]
+n_dev = stats["splits"]["dev"]["n_docs"]
+trunc = {e["seq_len"]: e for e in stats["splits"]["train"]["truncation"]}
+cut_1024 = 100 * trunc[1024]["frac_truncated"]
 
 prs = Presentation()
 prs.slide_width, prs.slide_height = W, H
@@ -115,6 +131,7 @@ def slide(num, kicker, headline):
     r = ghost.text_frame.paragraphs[0].add_run(); r.text = str(num)
     r.font.size = Pt(72); r.font.bold = True; r.font.color.rgb = FAINT; r.font.name = FONT
     ghost.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
+    EXEMPT.add(ghost.shape_id)
 
     txt(s, Inches(0.62), Inches(0.40), Inches(10.5), Inches(0.3),
         kicker.upper(), 12, color=ORANGE, bold=True, spacing=2)
@@ -137,23 +154,69 @@ def txt(s, x, y, w, h, text, size=14, bold=False, color=INK,
     return tb
 
 
+def lines(text, size, gap, width=None):
+    """Height a block of text needs, in inches, counting soft wraps too.
+
+    `width` is the inches available for the text. Helvetica Neue averages roughly
+    0.52 em per character in running text, which is what turns a width into a
+    character budget. Deliberately generous: over-estimating adds padding,
+    under-estimating clips, and clipping is the bug this function exists to stop.
+    """
+    per_line = max(1, int(width / (size / 72 * 0.52))) if width else 10 ** 6
+    n = 0
+    for hard in text.split("\n"):
+        n += max(1, -(-len(hard) // per_line))
+    return n * (size / 72 * 1.28 + gap / 72)
+
+
 def stat(s, x, y, w, value, label, big=44, color=ORANGE):
     """A single number, sized to read from the back of the room."""
     txt(s, x, y, w, Inches(0.85), value, big, bold=True, color=color, gap=0)
-    txt(s, x, y + Inches(0.72), w, Inches(0.9), label, 12, color=GREY, gap=2)
+    txt(s, x + Inches(0.02), y + Inches(0.72), w, Inches(0.9), label, 12, color=GREY, gap=2)
+    return y + Inches(0.72) + Inches(lines(label, 12, 2))
 
 
-def panel(s, x, y, w, h, fill=TINT):
+def panel(s, x, y, w, h, fill=TINT, edge=FAINT):
     sh = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, h)
     sh.fill.solid(); sh.fill.fore_color.rgb = fill
-    sh.line.color.rgb = FAINT; sh.line.width = Pt(0.75)
+    sh.line.color.rgb = edge; sh.line.width = Pt(0.75)
     sh.shadow.inherit = False
     sh.adjustments[0] = 0.04
     return sh
 
 
+PAD = 0.26          # inches of breathing room inside every card
+TITLE_GAP = 0.10
+
+
+def card(s, x, y, w, title, body, title_size=15, body_size=13, gap=4,
+         fill=TINT, accent=ORANGE, foot=None):
+    """A tinted card whose height is computed from its content.
+
+    The clipped-text bug this replaces came from writing panel heights by hand and
+    then editing the text. Here the panel cannot be shorter than what is in it.
+    """
+    inner = w / Inches(1) - 2 * PAD
+    th = title_size / 72 * 1.32 if title else 0.0
+    bh = lines(body, body_size, gap, inner)
+    fh = (lines(foot, 10.5, 2, inner) + 0.08) if foot else 0.0
+    h = PAD + th + (TITLE_GAP if title else 0) + bh + fh + PAD * 0.72
+    panel(s, x, y, w, Inches(h), fill=fill)
+    cy = y + Inches(PAD)
+    if title:
+        txt(s, x + Inches(PAD + 0.02), cy, w - Inches(2 * PAD), Inches(th),
+            title, title_size, bold=True, color=accent)
+        cy += Inches(th + TITLE_GAP)
+    txt(s, x + Inches(PAD + 0.02), cy, w - Inches(2 * PAD), Inches(bh),
+        body, body_size, gap=gap)
+    if foot:
+        txt(s, x + Inches(PAD + 0.02), cy + Inches(bh + 0.08),
+            w - Inches(2 * PAD), Inches(fh), foot, 10.5, color=GREY, gap=2)
+    return y + Inches(h)
+
+
 def table(s, x, y, rows, widths, size=13, rh=Inches(0.40), highlight=None,
-          right_align_from=1):
+          right_align_from=1, rule_after=None):
     """right_align_from: first column index to right-align. Set high to keep text left."""
     t = s.shapes.add_table(len(rows), len(rows[0]), x, y, sum(widths), rh * len(rows)).table
     for j, wd in enumerate(widths):
@@ -176,43 +239,53 @@ def table(s, x, y, rows, widths, size=13, rh=Inches(0.40), highlight=None,
             elif highlight is not None and j == highlight:
                 c.fill.fore_color.rgb = TINT
                 r.font.bold = True; r.font.color.rgb = ORANGE
+            elif rule_after is not None and i == rule_after:
+                c.fill.fore_color.rgb = TINT
+                r.font.color.rgb = INK
             else:
                 c.fill.fore_color.rgb = WHITE
                 r.font.color.rgb = INK
-    return t
+    return y + rh * len(rows)
 
 
 def fig(s, name, x, y, width):
+    """Place a figure and return its bottom edge, so the next thing can clear it."""
     p = FIGURES / name
-    if p.exists():
-        s.shapes.add_picture(str(p), x, y, width=width)
+    if not p.exists():
+        return y
+    s.shapes.add_picture(str(p), x, y, width=width)
+    px, py = Image.open(p).size
+    return y + Inches(width / Inches(1) * py / px)
 
 
 # ============================== 1. Problem ====================================
-s = slide(1, "The problem", "Can a clinic afford to run its own coding model?")
+s = slide(1, "The problem", "Can a clinic afford to run its own ICD-10 model?")
 
-panel(s, Inches(0.62), Inches(1.8), Inches(5.9), Inches(2.3))
-txt(s, Inches(0.95), Inches(2.05), Inches(5.3), Inches(0.35),
-    "Dr. Findus, our startup in Berlin", 15, bold=True)
-txt(s, Inches(0.95), Inches(2.52), Inches(5.3), Inches(1.5),
-    "German GPs code every consultation.\n"
-    "We propose, the physician confirms.\n"
-    "Reliability is the product.\n"
-    "Today it runs on hosted APIs.", 14, gap=6)
+card(s, Inches(0.62), Inches(1.82), Inches(5.6),
+     "Dr. Findus, our startup in Berlin",
+     "German GPs code every consultation.\n"
+     "We propose, the physician confirms.\n"
+     "Reliability is the product.\n"
+     "Today it runs on hosted APIs.",
+     title_size=15, body_size=14, gap=6, accent=INK)
 
-txt(s, Inches(7.0), Inches(2.05), Inches(5.7), Inches(1.0),
+txt(s, Inches(6.55), Inches(1.92), Inches(6.15), Inches(1.0),
     "Could it run on\nour own hardware?", 24, bold=True, color=ORANGE, gap=2)
-txt(s, Inches(7.0), Inches(3.35), Inches(5.7), Inches(0.8),
-    "Qwen3 + LoRA on CodiEsp.\n1 000 clinical case reports, ICD-10, CC-BY 4.0.",
+txt(s, Inches(6.55), Inches(3.02), Inches(6.15), Inches(0.8),
+    f"Qwen3-4B + LoRA on CodiEsp: {n_train} train / {n_dev} dev\n"
+    "Spanish case reports, ICD-10 coded, CC-BY 4.0.",
     13, color=GREY, gap=3)
 
-txt(s, Inches(0.62), Inches(4.55), Inches(12.0), Inches(0.35),
+txt(s, Inches(0.62), Inches(4.08), Inches(5.9), Inches(0.35),
     "The resource problem", 14, bold=True, color=ORANGE)
-txt(s, Inches(0.62), Inches(4.95), Inches(12.0), Inches(1.1),
-    "8 GB of weights at 4B before a single activation.  Cases up to 2 489 tokens.\n"
-    "One JAX program, lowered by XLA to CPU, GPU and TPU.", 17, gap=8)
+txt(s, Inches(0.62), Inches(4.48), Inches(5.9), Inches(1.4),
+    "8 GB of weights at 4B before a single activation.\n"
+    f"Median case {tok['p50']:,.0f} tokens, longest {tok['max']:,.0f}.\n"
+    "One JAX program, lowered by XLA to CPU, GPU and TPU.", 15, gap=9)
 
-txt(s, Inches(0.62), Inches(6.45), Inches(12.0), Inches(0.7),
+fig(s, "slide1-coverage.png", Inches(6.55), Inches(4.02), Inches(6.2))
+
+txt(s, Inches(0.62), Inches(6.42), Inches(12.0), Inches(0.7),
     "Where does the time go, and what does it take to run this at all?",
     22, bold=True)
 
@@ -221,87 +294,109 @@ txt(s, Inches(0.62), Inches(6.45), Inches(12.0), Inches(0.7),
 s = slide(2, "Approach", "One program. Three backends. All measured.")
 
 cols = [
-    ("Compilation", ORANGE,
+    ("Compilation",
      "One JAX program\nXLA lowers it to all three\nLoRA via qwix, Tunix trainer"),
-    ("Orchestration", ORANGE,
+    ("Orchestration",
      "3 pinned Docker images\nKubernetes across 2 clusters\nKueue admission, explicit limits"),
-    ("Storage", ORANGE,
+    ("Storage",
      "gcsfuse CSI, implicit-dirs\n8 GB checkpoint from a bucket\nFile cache left as a knob"),
 ]
-for i, (head, col, body) in enumerate(cols):
-    x = Inches(0.62 + i * 4.15)
-    panel(s, x, Inches(1.95), Inches(3.85), Inches(1.85))
-    txt(s, x + Inches(0.28), Inches(2.15), Inches(3.3), Inches(0.4), head, 16, bold=True, color=col)
-    txt(s, x + Inches(0.28), Inches(2.6), Inches(3.4), Inches(1.2), body, 13, gap=7)
+for i, (head, body) in enumerate(cols):
+    card(s, Inches(0.62 + i * 4.15), Inches(1.80), Inches(3.85), head, body,
+         title_size=16, body_size=13, gap=7)
 
-table(s, Inches(0.62), Inches(4.35), [
+panel(s, Inches(0.62), Inches(3.82), Inches(12.10), Inches(0.66),
+      fill=WHITE, edge=ORANGE_L)
+txt(s, Inches(0.62), Inches(3.98), Inches(12.10), Inches(0.35),
+    "gs://me344-tpu-labs-west4   →   gcsfuse CSI sidecar   →   /gcs in the pod"
+    "   →   8 GB checkpoint   →   HBM",
+    13.5, bold=True, align=PP_ALIGN.CENTER, gap=0)
+
+table(s, Inches(0.62), Inches(4.72), [
     ["Backend", "Hardware", "Host arch", "How the code got there"],
-    ["CPU", "32-core x86_64, 31 GiB", "x86_64", "bare node"],
+    ["CPU", "32-core x86_64, 31 GiB", "x86_64", "bare node, podman"],
     ["GPU", "NVIDIA GH200 480 GB", "ARM64 Grace", "public image + ConfigMap"],
     ["TPU", "v5e 2×4, 8 chips", "x86_64", "private registry + gcsfuse"],
 ], [Inches(1.5), Inches(4.1), Inches(2.4), Inches(4.1)], size=12.5,
-    right_align_from=99)
+    rh=Inches(0.41), right_align_from=99)
 
-txt(s, Inches(0.62), Inches(6.15), Inches(12.0), Inches(0.5),
+txt(s, Inches(0.62), Inches(6.55), Inches(12.0), Inches(0.5),
     "The GH200 host is ARM64. That one fact cost five separate blockers.",
-    15, bold=True, color=ORANGE)
+    16, bold=True, color=ORANGE)
 
 
 # ============================== 3. Measurements ================================
 s = slide(3, "Measurements", "We did not time the job. We took it apart.")
 
-txt(s, Inches(0.62), Inches(2.05), Inches(5.4), Inches(2.4),
-    "Six phases per run, not one total\n"
-    "Sweeps walked into OOM, failed cells kept\n"
-    "One schema, one JSON per run\n"
-    "Every figure reads only those files", 16, gap=18)
+hz = 1 / gpu["utilization"]["sample_interval_s"]
 
-fig(s, "slide3-walltime.png", Inches(6.4), Inches(2.0), Inches(6.3))
+y = table(s, Inches(0.62), Inches(1.82), [
+    ["What we sample", "Instrument"],
+    ["Chip utilisation", f"nvidia-smi {hz:.0f} Hz · psutil on CPU"],
+    ["Peak memory", "jax memory_stats() · peak RSS"],
+    ["Step time", "median, p10, p90, warmup excluded"],
+    ["Wall clock", "six phases, must sum to total"],
+], [Inches(2.15), Inches(3.35)], size=12.5, rh=Inches(0.40), right_align_from=99)
 
-panel(s, Inches(6.4), Inches(3.85), Inches(6.3), Inches(2.35),
-      fill=RGBColor(0xFE, 0xF2, 0xF2))
-txt(s, Inches(6.72), Inches(4.08), Inches(5.7), Inches(0.35),
-    "The schema caught a lie", 15, bold=True, color=RGBColor(0xDC, 0x26, 0x26))
-txt(s, Inches(6.72), Inches(4.5), Inches(5.7), Inches(1.6),
-    "93 µs per step. 11 M tokens/s. Impossible,\n"
-    "yet it carried status \"ok\".\n\n"
-    "Its own notes admitted it may have timed\n"
-    "dispatch, not completion. Discarded.", 13, gap=4)
+txt(s, Inches(0.62), y + Inches(0.16), Inches(5.5), Inches(0.7),
+    "One schema, one JSON per run. Every figure in this\n"
+    "deck reads those files and nothing else.", 12, color=GREY, gap=2)
+
+card(s, Inches(0.62), Inches(4.52), Inches(5.5),
+     "The schema caught a lie",
+     "93 µs per step. 11 M tokens/s. Impossible,\n"
+     "yet it carried status \"ok\".\n\n"
+     "Its own notes admitted it may have timed\n"
+     "dispatch, not completion. Discarded and re-run.",
+     title_size=15, body_size=12.5, gap=4, fill=RED_TINT, accent=RED)
+
+y = fig(s, "slide3-walltime.png", Inches(6.40), Inches(1.78), Inches(6.30))
+
+table(s, Inches(6.40), y + Inches(0.28), [
+    ["Backend", "Peak memory, largest fitting run", "Next step up"],
+    ["CPU 32-core", f"{m_cpu:.1f} % of 31 GiB (RSS)", "4B never ran"],
+    ["GH200", f"{mem_gpu:.1f} % of 96 GiB HBM", f"batch {oom_gpu} OOM"],
+    ["v5e, 8 chips", f"{mem_tpu:.1f} % of 16 GiB/chip", f"batch {oom_tpu} OOM"],
+], [Inches(1.60), Inches(3.05), Inches(1.65)], size=12, rh=Inches(0.40),
+    right_align_from=99)
+
+txt(s, Inches(6.40), y + Inches(2.02), Inches(6.30), Inches(0.6),
+    "Memory is what ends every sweep. One batch step past\nthese numbers, all three fail.",
+    13.5, bold=True, color=ORANGE, gap=2)
 
 
 # ============================== 4. Results ====================================
 s = slide(4, "Results", "Under load, one GH200 beats eight TPU chips.")
 
-table(s, Inches(0.62), Inches(1.85), [
-    ["Qwen3-4B, seq 1024", "GH200  1 chip", "v5e  8 chips", "ratio"],
-    ["batch 8", f"{g8:,.0f} tok/s", f"{t8:,.0f} tok/s", f"{g8/t8:.1f}x"],
-    ["batch 16", f"{g16:,.0f} tok/s", f"{t16:,.0f} tok/s", f"{g16/t16:.1f}x"],
-    ["batch 32", f"{g32:,.0f} tok/s", "out of memory", ""],
-    ["batch 64", "out of memory", "", ""],
-], [Inches(2.5), Inches(2.0), Inches(2.0), Inches(1.2)], size=13,
-    rh=Inches(0.42), highlight=1)
+y = table(s, Inches(0.62), Inches(1.74), [
+    ["Qwen3-0.6B, batch 1", "CPU 32-core", "GH200  1 chip", "v5e  8 chips"],
+    ["Median step time", f"{c_s:.2f} s", f"{g_s:.4f} s", f"{t_s:.4f} s"],
+    ["Speedup vs CPU", "1.0×", f"{sp_g:.0f}×", f"{sp_t:.0f}×"],
+    ["Mean chip utilisation", f"{u_cpu:.1f} %", f"{u_gpu:.2f} %", "no counter exists"],
+    ["Peak memory", f"{m_cpu:.1f} %", f"{m_gpu:.1f} %", f"{m_tpu:.1f} %"],
+], [Inches(2.45), Inches(1.70), Inches(1.70), Inches(1.70)], size=12.5,
+    rh=Inches(0.375), rule_after=2)
 
-txt(s, Inches(0.62), Inches(4.15), Inches(7.5), Inches(0.75),
-    f"At batch 1 both chips idle and tie to within {gt:.2f} %. That tie was an artefact.",
-    15, bold=True, gap=3)
+txt(s, Inches(0.62), y + Inches(0.14), Inches(7.55), Inches(0.7),
+    f"Both accelerators are ~{sp_g:.0f}× the CPU and tie with each other to "
+    f"{gt:.2f} %.\nAt batch 1 neither is busy. That tie is an artefact.",
+    14.5, bold=True, gap=3)
 
-fig(s, "slide4-sweep.png", Inches(0.62), Inches(4.95), Inches(7.5))
+fig(s, "slide4-sweep.png", Inches(0.62), Inches(4.42), Inches(7.55))
 
-stat(s, Inches(8.7), Inches(1.85), Inches(4.0), f"{load_ratio:.1f}x",
+stat(s, Inches(8.45), Inches(1.74), Inches(4.25), f"{load_ratio:.1f}x",
      "the throughput of an eight-chip v5e\nslice, from a single Hopper chip", big=52)
 
-panel(s, Inches(8.7), Inches(3.6), Inches(4.0), Inches(1.5))
-txt(s, Inches(9.0), Inches(3.8), Inches(3.5), Inches(0.3),
-    "Memory boundary", 14, bold=True, color=ORANGE)
-txt(s, Inches(9.0), Inches(4.15), Inches(3.5), Inches(0.9),
-    "GH200 fails between 32 and 64\nv5e fails between 16 and 32", 14, gap=4)
+card(s, Inches(8.45), Inches(3.52), Inches(4.25),
+     "Memory boundary",
+     f"GH200 fails between {bs_gpu} and {oom_gpu}\nv5e fails between {bs_tpu} and {oom_tpu}",
+     title_size=14, body_size=13.5, gap=4)
 
-panel(s, Inches(8.7), Inches(5.3), Inches(4.0), Inches(1.55))
-txt(s, Inches(9.0), Inches(5.5), Inches(3.5), Inches(0.3),
-    "The mitigation, controlled", 14, bold=True, color=ORANGE)
-txt(s, Inches(9.0), Inches(5.85), Inches(3.5), Inches(1.0),
-    f"File cache: load {load_x:.1f}x faster,\n{wall_cut:.0f} % off wall clock.\n"
-    "Step time unchanged to the\nfourth decimal.", 13, gap=3)
+card(s, Inches(8.45), Inches(5.02), Inches(4.25),
+     "The mitigation, controlled",
+     f"File cache on: checkpoint load\n{load_x:.1f}× faster, {wall_cut:.0f} % off wall clock.\n"
+     "Median step time unchanged to\nthe fourth decimal.",
+     title_size=14, body_size=13, gap=3)
 
 
 # ============================== 5. Conclusion =================================
@@ -311,7 +406,7 @@ findings = [
     (f"{compute_pct:.0f} %",
      "of wall clock is arithmetic",
      f"Of {bp['total_wall_s']:.0f} s, only {bp['steady_state_s']:.0f} s computes.\n"
-     "The biggest single phase is\nreading the checkpoint."),
+     f"The biggest single phase is\nreading the checkpoint: {load_pct:.0f} %."),
     ("6.7×",
      "more parameters, CPU stopped",
      "0.6B to 4B did not make the CPU\n6.7× slower. XLA never finished\n"
@@ -323,33 +418,35 @@ findings = [
 ]
 for i, (big, cap, body) in enumerate(findings):
     x = Inches(0.62 + i * 4.15)
-    panel(s, x, Inches(1.9), Inches(3.85), Inches(2.65))
-    txt(s, x + Inches(0.28), Inches(2.05), Inches(3.3), Inches(0.7), big,
+    panel(s, x, Inches(1.80), Inches(3.85), Inches(2.50))
+    txt(s, x + Inches(0.28), Inches(1.94), Inches(3.3), Inches(0.7), big,
         34 if i == 0 else 26, bold=True, color=ORANGE if i == 0 else INK, gap=0)
-    txt(s, x + Inches(0.28), Inches(2.68), Inches(3.35), Inches(0.45), cap, 12, bold=True, gap=2)
-    txt(s, x + Inches(0.28), Inches(3.15), Inches(3.35), Inches(1.3), body, 11.5, color=GREY, gap=2)
+    txt(s, x + Inches(0.28), Inches(2.56), Inches(3.35), Inches(0.45), cap, 12,
+        bold=True, gap=2)
+    txt(s, x + Inches(0.28), Inches(3.03), Inches(3.35), Inches(1.3), body, 11.5,
+        color=GREY, gap=2)
 
-txt(s, Inches(0.62), Inches(4.8), Inches(5.9), Inches(0.35),
+txt(s, Inches(0.62), Inches(4.62), Inches(5.9), Inches(0.35),
     "Scaling recommendation", 15, bold=True, color=ORANGE)
-txt(s, Inches(0.62), Inches(5.18), Inches(5.9), Inches(1.4),
+txt(s, Inches(0.62), Inches(5.00), Inches(5.9), Inches(1.4),
     "Do not scale out. Amortise: raise batch only until\n"
     "the chip is occupied, then attack fixed cost:\n"
     "persistent compile caches, warm workers instead of\n"
     "a pod per job, file cache on anything reading a\n"
     "checkpoint.", 13, gap=2)
 
-panel(s, Inches(6.8), Inches(4.66), Inches(5.9), Inches(2.05))
-txt(s, Inches(7.1), Inches(4.84), Inches(5.4), Inches(0.35),
-    "What this means for Dr. Findus", 15, bold=True, color=ORANGE)
-txt(s, Inches(7.1), Inches(5.22), Inches(5.4), Inches(1.4),
-    f"On the real 4B workload one GH200 runs {load_ratio:.1f}x faster\n"
-    f"than eight TPU chips and costs {cost_ratio_4b:.0f}x less:\n"
-    f"${k4_gpu:.2f} against ${k4_tpu:.2f} per 1 000 steps.\n\n"
-    "Self-hosting is not the cost problem we assumed.\n"
-    "The real cost is fixed overhead per job.", 12.5, gap=2)
+card(s, Inches(6.80), Inches(4.46), Inches(5.90),
+     "What this means for Dr. Findus",
+     f"At batch 8, the slice's own best point: one GH200 runs\n"
+     f"{g8 / t8:.1f}× faster than eight TPU chips and costs "
+     f"{cost_ratio_4b:.0f}× less,\n${k4_gpu:.2f} against ${k4_tpu:.2f} per 1,000 steps.\n\n"
+     "Self-hosting is not the cost problem we assumed.\n"
+     "The real cost is fixed overhead per job.",
+     title_size=15, body_size=12.5, gap=2,
+     foot="TPU rate billed; the GH200 rate is a market proxy.")
 
-txt(s, Inches(0.62), Inches(6.75), Inches(12.1), Inches(0.4),
-    f"{sum(1 for r in recs.values())} measured runs  ·  "
+txt(s, Inches(0.62), Inches(6.98), Inches(12.1), Inches(0.30),
+    f"{len(recs)} measured runs  ·  "
     "github.com/RN0L/me344-qwen3-icd10-profiling",
     11, color=GREY, align=PP_ALIGN.CENTER)
 
@@ -357,5 +454,23 @@ txt(s, Inches(0.62), Inches(6.75), Inches(12.1), Inches(0.4),
 prs.save(OUT)
 n = len(prs.slides._sldIdLst)
 print(f"wrote {OUT.relative_to(REPO)}, {n} slides, {OUT.stat().st_size // 1024} KB")
-if gpu_sweep:
-    print(f"GPU sweep cells available: {[b for b, _ in gpu_sweep]}, rerun to fold them in")
+
+# --- guard: nothing may run off the bottom or the right edge --------------------
+# The card heights above are computed, but the y offsets are still written by hand,
+# so this is the check that catches a hand-written offset that stopped fitting.
+MARGIN = 0.14
+bad = []
+for i, sl in enumerate(prs.slides, 1):
+    for sh in sl.shapes:
+        if sh.height == H or sh.shape_id in EXEMPT:
+            continue
+        bottom = (sh.top + sh.height) / Inches(1)
+        right = (sh.left + sh.width) / Inches(1)
+        label = (sh.text_frame.text.split("\n")[0][:34]
+                 if sh.has_text_frame else sh.shape_type)
+        if bottom > H / Inches(1) - MARGIN:
+            bad.append(f"  slide {i}: bottom {bottom:.2f}in  {label!r}")
+        if right > W / Inches(1) - MARGIN:
+            bad.append(f"  slide {i}: right {right:.2f}in  {label!r}")
+print("layout clean, nothing within %.2f in of an edge" % MARGIN if not bad
+      else "LAYOUT OVERFLOW:\n" + "\n".join(bad))
