@@ -4,6 +4,9 @@
 **Leonard Arnold** ([@RN0L](https://github.com/RN0L)) and **Luis Hambuch**
 ([@luishmb05](https://github.com/luishmb05)), Stanford ME344, summer 2026.
 
+📹 **[Video presentation, 7 min](https://youtu.be/UdeTCUTZDh8)**  ·  📊 **[Slides,
+5 pages](slides/ME344_Final_Arnold_Hambuch.pdf)**
+
 LoRA fine-tuning of Qwen3 on CodiEsp (Spanish clinical case reports annotated with ICD-10
 diagnosis codes), run through one JAX/XLA code path on CPU, GPU and TPU backends, instrumented
 to answer one question:
