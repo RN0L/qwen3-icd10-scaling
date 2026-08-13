@@ -719,7 +719,7 @@
         "data_prep": 2.01,
         "trainer_build": 1.61
       },
-      "other_s_composition_residual_s": 16.507948142457753,
+      "other_s_composition_residual_s": 16.507948142457757,
       "amortisation": {
         "fixed_s": 165.53808476403356,
         "marginal_s_per_step": 0.7088230149820447,
@@ -931,7 +931,7 @@
         "data_prep": 23.61,
         "trainer_build": 0.95
       },
-      "other_s_composition_residual_s": 25.45949942199988,
+      "other_s_composition_residual_s": 25.459499421999872,
       "amortisation": {
         "fixed_s": 244.9942788990008,
         "marginal_s_per_step": 3.564989579999974,
@@ -1111,7 +1111,7 @@
           "steady_compute_s": 21.595158819053427,
           "checkpoint_write_s": 0.4203740173975163
         },
-        "unattributed_s": 0.0,
+        "unattributed_s": 5.684341886080802e-14,
         "sums_to_total": true,
         "detail": {
           "n_steps_recorded": 62,
@@ -1131,7 +1131,7 @@
         "data_prep": 27.29,
         "trainer_build": 0.93
       },
-      "other_s_composition_residual_s": 19.536996348999963,
+      "other_s_composition_residual_s": 19.53699634899995,
       "amortisation": {
         "fixed_s": 394.2031842580006,
         "marginal_s_per_step": 1.75122505249999,
@@ -1237,7 +1237,7 @@
         "data_prep": 40.32,
         "trainer_build": 1.04
       },
-      "other_s_composition_residual_s": 19.73539740000018,
+      "other_s_composition_residual_s": 19.735397400000167,
       "amortisation": {
         "fixed_s": 624.3295863149987,
         "marginal_s_per_step": 1.7511670740000227,
@@ -1854,6 +1854,75 @@
     "batch_size": [
       {
         "varies": "batch_size",
+        "backend": "gpu",
+        "held": {
+          "model": "Qwen/Qwen3-4B",
+          "seq_len": 1024
+        },
+        "points": [
+          {
+            "batch_size": 8,
+            "run_id": "gpu-gh200-bs8-seq1024",
+            "status": "ok",
+            "median_step_s": 0.7088230149820447,
+            "tokens_per_s": 11557.186810881858,
+            "peak_bytes": 35244736512.0,
+            "peak_pct": 34.343166004230056,
+            "capacity_bytes": 102625181696.0
+          },
+          {
+            "batch_size": 16,
+            "run_id": "gpu-gh200-bs16-seq1024",
+            "status": "ok",
+            "median_step_s": 1.3103294293396175,
+            "tokens_per_s": 12503.72588232048,
+            "peak_bytes": 35248930816.0,
+            "peak_pct": 34.3472530167261,
+            "capacity_bytes": 102625181696.0
+          },
+          {
+            "batch_size": 32,
+            "run_id": "gpu-gh200-bs32-seq1024",
+            "status": "ok",
+            "median_step_s": 2.479018381331116,
+            "tokens_per_s": 13218.135148479669,
+            "peak_bytes": 69577211904.0,
+            "peak_pct": 67.79740679057126,
+            "capacity_bytes": 102625181696.0
+          },
+          {
+            "batch_size": 64,
+            "run_id": "gpu-gh200-bs64-seq1024",
+            "status": "oom",
+            "median_step_s": null,
+            "tokens_per_s": null,
+            "peak_bytes": null,
+            "peak_pct": null,
+            "capacity_bytes": null
+          }
+        ],
+        "max_ok": 32,
+        "min_oom": 64,
+        "scaling": [
+          {
+            "from": 8,
+            "to": 16,
+            "step_time_ratio": 1.8485988767912815,
+            "throughput_ratio": 1.0819004734393833,
+            "exponent": 0.8864322116297856
+          },
+          {
+            "from": 16,
+            "to": 32,
+            "step_time_ratio": 1.8919046812376767,
+            "throughput_ratio": 1.0571357108179509,
+            "exponent": 0.9198394040209433
+          }
+        ]
+      },
+      {
+        "varies": "batch_size",
+        "backend": "tpu",
         "held": {
           "model": "Qwen/Qwen3-4B",
           "seq_len": 1024
@@ -1906,6 +1975,7 @@
     "seq_len": [
       {
         "varies": "seq_len",
+        "backend": "tpu",
         "held": {
           "model": "Qwen/Qwen3-4B",
           "batch_size": 8

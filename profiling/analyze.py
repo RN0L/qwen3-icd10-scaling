@@ -660,18 +660,26 @@ def amortisation_curve(
 
 
 def sweep(
-    runs: Sequence[Dict[str, Any]], vary: str, hold: Sequence[str], backend: str = "tpu"
+    runs: Sequence[Dict[str, Any]], vary: str, hold: Sequence[str],
+    backend: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Group runs that differ in exactly one configuration axis.
 
     Used for the batch-size and sequence-length sweeps. Records with ``status: oom`` are kept:
     the failure boundary is the point of the sweep, so dropping them would delete the finding.
+
+    ``backend`` defaults to *every* backend that has one. It used to default to ``"tpu"``,
+    which was correct while the TPU was the only platform with a sweep — and silently wrong
+    the moment a GPU batch sweep was measured: four records sat in ``results/`` contributing
+    nothing to the analysis, and the batch-size finding was quoted as if it were a property of
+    the workload rather than of the v5e. Backend is now part of the family key, so each
+    platform gets its own sweep and they can be compared.
     """
     families: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
     for run in runs:
-        if run["backend"] != backend:
+        if backend is not None and run["backend"] != backend:
             continue
-        key = tuple(run["config"][name] for name in hold)
+        key = (run["backend"],) + tuple(run["config"][name] for name in hold)
         families.setdefault(key, []).append(run)
 
     results = []
@@ -704,7 +712,8 @@ def sweep(
 
         entry: Dict[str, Any] = {
             "varies": vary,
-            "held": dict(zip(hold, key)),
+            "backend": key[0],
+            "held": dict(zip(hold, key[1:])),
             "points": points,
             "max_ok": max(ok_values) if ok_values else None,
             "min_oom": min(oom_values) if oom_values else None,
