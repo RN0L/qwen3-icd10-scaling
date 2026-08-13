@@ -263,26 +263,39 @@ compilation — which is what identifies compilation as the constraint rather th
 Memory is a *capacity* constraint here, not a throughput constraint. The distinction is
 measurable and the records make it.
 
-HBM does bound the configuration: batch 32 fails with `RESOURCE_EXHAUSTED: the total memory
-required for HLO temporaries (21.67G) exceeds available HBM (15.75G)`, so batch 16 is the
-largest that runs. But raising the batch would not have bought throughput even if the memory
-were there:
+HBM does bound the configuration: batch 32 fails on the v5e with `RESOURCE_EXHAUSTED: the
+total memory required for HLO temporaries (21.67G) exceeds available HBM (15.75G)`, so batch 16
+is the largest that runs there. And on the v5e, raising the batch would not have bought
+throughput even if the memory were there:
 
-| Batch | Median step | Tokens/s | Peak HBM |
-|---|---|---|---|
-| 8 | 1.7512 s | 4 677.9 | 69.4 % |
-| 16 | 3.5650 s | 4 595.8 | 65.5 % |
-| 32 | — | — | **OOM** |
+| Batch | TPU step | TPU tokens/s | TPU peak | GPU step | GPU tokens/s | GPU peak |
+|---|---|---|---|---|---|---|
+| 8 | 1.7512 s | 4 677.9 | 69.4 % | 0.7088 s | 11 557.2 | 34.3 % |
+| 16 | 3.5650 s | 4 595.8 | 65.5 % | 1.3103 s | 12 503.7 | 34.3 % |
+| 32 | — | — | **OOM** | 2.4790 s | 13 218.1 | 67.8 % |
+| 64 | — | — | — | — | — | **OOM** |
 
-Doubling the batch multiplies step time by **2.036** and changes throughput by **−1.8 %**. Per
-token, the step costs what it costs; the batch dimension buys nothing back. So the memory
-ceiling forbids a configuration that was not worth having, and cannot be the reason the job is
-slow.
+On the TPU, doubling the batch multiplies step time by **2.036** and changes throughput by
+**−1.8 %**. Per token the step costs what it costs, so the memory ceiling forbids a
+configuration that was not worth having and cannot be why the job is slow.
+
+**On the GPU the same lever does the opposite**, and this document said otherwise until the
+sweep was measured. Throughput rises **+8.2 %** to batch 16 and **+5.7 %** again to batch 32,
+**+14.4 %** across the sweep, and the run survives a batch the v5e cannot hold — at 34.3 %
+occupancy against the TPU's 69.4 %, it had the headroom to spend.
+
+The correction sharpens the argument rather than weakening it. "Batch size buys no throughput"
+was never a property of the workload; it is a property of an eight-chip v5e slice already near
+its memory ceiling. What survives, and is now supported on two platforms instead of asserted
+from one, is the narrower claim: **the batch dimension is not where this workload's wall-clock
+problem lives.** Even the GPU's best point, batch 32 at 13 218 tokens/s, moves the end-to-end
+result by a fraction of what the fixed cost does.
 
 Two further observations belong here because they are counterintuitive and are in the data.
 Peak HBM at batch 16 (65.5 %) is *lower* than at batch 8 (69.4 %) even though the OOM at batch
 32 is a memory failure: peak occupancy is set by the XLA scheduler's buffer assignment, not by
-a simple function of batch size. And across sequence lengths 512 → 1024 → 2048 peak HBM is
+a simple function of batch size. The GPU shows the same non-monotonicity from the other side —
+flat at 34.3 % across batch 8 and 16, then 67.8 % at batch 32. And across sequence lengths 512 → 1024 → 2048 peak HBM is
 flat (73.8 %, 69.4 %, 70.1 %) while step time rises as `seq^1.30`. That flatness is
 `remat=DECODER` doing its job: rematerialisation bounds activation memory, so longer sequences
 are paid for in time and not in capacity.
@@ -311,6 +324,23 @@ same workload that gives a 238× per-step speedup. That is the wall-clock decomp
 confirmed by a completely independent instrument: the phase timers say 2.5 % of the run was
 compute, and the GPU's own counter says it was busy 1.6 % of the time. Two different
 measurement paths, the same conclusion.
+
+**And the 4B sweep shows how much of that 1.59 % is the configuration rather than the
+platform.** The same counter on the same card, under a real load:
+
+| Run | Mean GPU utilisation |
+|---|---|
+| 0.6B, batch 1 | **1.59 %** |
+| 4B, batch 8 | 13.1 % |
+| 4B, batch 16 | **23.6 %** |
+| 4B, batch 32 | 28.1 % |
+
+A 17× increase from the benchmark configuration to the largest batch that fits. This is worth
+stating precisely, because the honest claim is narrower than "accelerators sit idle": *a
+0.6B model at batch 1 leaves a GH200 idle 98 % of the time*, and loading it properly recovers
+most of one order of magnitude — and still tops out near 28 %. The fixed-cost diagnosis is not
+weakened by that. It is the reason the ceiling is 28 % and not higher: even at batch 32 the job
+spends the majority of its wall clock somewhere other than the arithmetic.
 
 **On the TPU it remains not claimable, and is not claimed.** `utilization.mean_pct` is null on
 every TPU record by design: JAX exposes device memory statistics but no core-utilization

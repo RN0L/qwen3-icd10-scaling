@@ -279,13 +279,16 @@ arrived at from the opposite direction.
 
 ### Sweeps, and the failure boundary
 
-Qwen3-4B on TPU v5e 2x4, sequence 1024 (batch sweep) / batch 8 (sequence sweep):
+Qwen3-4B, sequence 1024, batch swept on **both** accelerators; sequence swept on the TPU at
+batch 8.
 
-| Batch | Step time | Tokens/s | Peak HBM | Status |
-|---|---|---|---|---|
-| 8 | 1.7512 s | 4 677.9 | 69.4 % | ok |
-| 16 | 3.5650 s | 4 595.8 | 65.5 % | ok |
-| 32 | n/a | n/a | n/a | **OOM**, HLO temporaries 21.67 G > 15.75 G HBM |
+| Batch | TPU v5e 2x4 | | | GPU GH200 | | |
+|---|---|---|---|---|---|---|
+| | Step time | Tokens/s | Peak mem | Step time | Tokens/s | Peak mem |
+| 8 | 1.7512 s | 4 677.9 | 69.4 % | 0.7088 s | 11 557.2 | 34.3 % |
+| 16 | 3.5650 s | 4 595.8 | 65.5 % | 1.3103 s | 12 503.7 | 34.3 % |
+| 32 | **OOM** — HLO temporaries 21.67 G > 15.75 G HBM | | | 2.4790 s | **13 218.1** | 67.8 % |
+| 64 | — | | | **OOM** | | |
 
 | Sequence | Step time | Tokens/s | Peak HBM |
 |---|---|---|---|
@@ -293,11 +296,17 @@ Qwen3-4B on TPU v5e 2x4, sequence 1024 (batch sweep) / batch 8 (sequence sweep):
 | 1 024 | 1.7512 s | 4 677.9 | 69.4 % |
 | 2 048 | 4.2760 s | 3 831.6 | 70.1 % |
 
-Two results worth stating plainly:
+Three results worth stating plainly:
 
-- **Batch size buys nothing.** Doubling batch multiplies step time by 2.036 and changes
-  throughput by **−1.8 %**. The HBM ceiling at batch 32 therefore forbids a configuration that
-  was not worth having.
+- **Batch size buys nothing — on the v5e.** Doubling batch there multiplies step time by 2.036
+  and changes throughput by **−1.8 %**, so the HBM ceiling at batch 32 forbids a configuration
+  that was not worth having anyway. *This was reported as a general finding until the GPU sweep
+  was measured, and it is not one.*
+- **On the GH200 the same lever pays.** Throughput rises **+8.2 %** from batch 8 to 16 and a
+  further **+5.7 %** to batch 32, **+14.4 %** across the sweep, and the run survives a batch the
+  v5e cannot hold. The reason is visible one column to the right: the GPU is at **34.3 %**
+  occupancy where the TPU is at 69.4 %, so it has the headroom to spend and the v5e does not.
+  Two platforms, one workload, opposite answers to "should I raise the batch size?" 
 - **Sequence length costs time, not memory.** Step time grows as `seq^1.30`; peak HBM is flat
   (73.8 / 69.4 / 70.1 %). That flatness is `remat=DECODER` bounding activation memory:
   rematerialisation converting a capacity problem into a time problem, visible in one row.
@@ -307,6 +316,40 @@ Two results worth stating plainly:
 **72.8 %** and **99.2 %** of the training documents uncut. The 1 024 window benchmarked
 throughout truncates 27.2 % of cases and loses the completion entirely on 21 % of them, so the
 sweep above is also a coverage trade-off, not only a memory one.*
+
+### The same comparison at 4B, where the workload is finally large
+
+The 0.6B trio is a clean like-for-like but a small one. At 4B, batch 8 and 16, the GPU and the
+TPU meet again — and the shape of the comparison changes:
+
+| Qwen3-4B, seq 1024 | Per-step | N=12 | N=100 | N=1 000 | N=10 000 | GPU fixed | TPU fixed |
+|---|---|---|---|---|---|---|---|
+| batch 8 | **2.47×** | 2.39× | 2.41× | 2.45× | 2.47× | 165.5 s | 394.2 s |
+| batch 16 | **2.72×** | 1.53× | 1.99× | 2.57× | 2.70× | 171.9 s | 245.0 s |
+
+At batch 8 the end-to-end ratio is **2.39× at twelve steps and 2.47× asymptotically** — it
+barely moves. Compare that with the 0.6B row, where the same GPU goes from 3.68× to 205.87×
+over the same range. The fixed cost has not gone away; the workload has finally grown enough
+that the arithmetic dominates it:
+
+| Run | Wall clock spent computing |
+|---|---|
+| GPU, 0.6B, batch 1 | 2.5 % |
+| GPU, 4B, batch 8 | 9.7 % |
+| GPU, 4B, batch 32 | 16.7 % |
+| TPU, 4B, batch 8 | 21.6 % |
+
+**This is the clearest statement of the diagnosis the data supports.** The fixed-cost problem
+is a *small-job* problem. Feed the accelerator a model and a batch big enough and the per-step
+advantage starts arriving immediately, because there is finally enough work per step to
+amortise the startup within the run itself. The benchmark configuration this project spent most
+of its measurements on — 0.6B at batch 1 — is precisely the configuration where that is least
+true, which is why it made the fixed cost so visible.
+
+The batch-16 row shows the same thing from the other direction. Its TPU baseline drew a 5 s
+scheduler queue where the batch-8 baseline drew 116 s, so the TPU's fixed cost is 245.0 s
+instead of 394.2 s and the GPU's advantage at twelve steps shrinks to 1.53× before climbing
+back to 2.70×. Nothing about either chip changed between those two rows. A queue did.
 
 ### Cost
 
@@ -403,7 +446,7 @@ limited by anything the silicon does, these two rows would not separate. They se
 |---|---|
 | **Compute bound** | Steady-state compute is 21.6 % of the reference run and 2.5 % on *both* accelerators at the like-for-like configuration. All eight completed runs spend more wall clock not computing than computing. |
 | **I/O bound** | It *was*: checkpoint load was 32.1 % of the uncached run and its largest segment. We removed it, 14.57× faster, and the job stayed **78.4 % non-compute**. The bottleneck moved to compilation rather than disappearing. That transition is what identifies the constraint. |
-| **Memory bound** | Memory is a capacity limit, not a throughput limit. Batch 32 OOMs, but batch 16 is already **1.8 % slower** per token than batch 8, so the forbidden configuration was not worth having. Memory *is* decisive for feasibility: the 4B fine-tune does not fit the 31 GiB CPU node at all. |
+| **Memory bound** | Memory is a capacity limit, not a throughput limit. On the v5e batch 32 OOMs and batch 16 is already **1.8 % slower** per token than batch 8, so the forbidden configuration was not worth having. The GPU sweep shows the opposite slope (**+14.4 %** to batch 32) and is the reason this row now says *on the v5e* — but even the GPU's best batch moves the end-to-end result by a fraction of what the fixed cost does, so the batch dimension is still not where the wall-clock problem lives. Memory *is* decisive for feasibility: the 4B fine-tune does not fit the 31 GiB CPU node at all. |
 | **Chip-level underutilisation** | **Now measured, on the one backend that exposes a counter: mean GPU utilisation over the whole run was 1.59 %** (max 48 %), from `nvidia-smi`. The accelerator is idle, not slow. This remains *not claimable for the TPU*, because JAX exposes no core-utilization counter and we did not fabricate one; its 7.3 % figure is HBM occupancy, which is a different quantity. |
 
 Full derivation, including the exact identity used to split `steady_state_s` and the
