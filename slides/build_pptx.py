@@ -277,7 +277,7 @@ def fig(s, name, x, y, width):
 s = slide(1, "The problem", "Can a clinic afford to run its own ICD-10 model?")
 
 txt(s, Inches(0.62), Inches(1.92), Inches(5.6), Inches(0.35),
-    "Dr. Findus, our startup in Berlin", 15, bold=True, gap=0)
+    "DrFindus, our startup in Berlin", 15, bold=True, gap=0)
 txt(s, Inches(0.62), Inches(2.34), Inches(5.6), Inches(1.5),
     "German GPs code every consultation.\n"
     "We propose, the physician confirms.\n"
