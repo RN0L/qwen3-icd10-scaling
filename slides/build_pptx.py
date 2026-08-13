@@ -171,9 +171,24 @@ def lines(text, size, gap, width=None):
 
 def stat(s, x, y, w, value, label, big=44, color=ORANGE):
     """A single number, sized to read from the back of the room."""
-    txt(s, x, y, w, Inches(0.85), value, big, bold=True, color=color, gap=0)
-    txt(s, x + Inches(0.02), y + Inches(0.72), w, Inches(0.9), label, 12, color=GREY, gap=2)
-    return y + Inches(0.72) + Inches(lines(label, 12, 2))
+    drop = Inches(big / 72 * 1.15 + 0.08)      # the number's own line box, plus air
+    txt(s, x, y, w, drop, value, big, bold=True, color=color, gap=0)
+    txt(s, x + Inches(0.02), y + drop, w, Inches(0.9), label, 12, color=GREY, gap=2)
+    return y + drop + Inches(lines(label, 12, 2))
+
+
+def hairline(s, x, y, length, vertical=False, color=FAINT, weight=1.0):
+    """A rule. Divides two blocks without wrapping either one in a shape.
+
+    Every tinted card on a slide is a decision to enclose something, and enclosing
+    everything is how a deck ends up with six identical containers and no hierarchy.
+    A 1pt line does the same separating work and adds no weight.
+    """
+    w, h = (Pt(weight), length) if vertical else (length, Pt(weight))
+    sh = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
+    sh.fill.solid(); sh.fill.fore_color.rgb = color
+    sh.line.fill.background(); sh.shadow.inherit = False
+    return sh
 
 
 def panel(s, x, y, w, h, fill=TINT, edge=FAINT):
@@ -261,13 +276,14 @@ def fig(s, name, x, y, width):
 # ============================== 1. Problem ====================================
 s = slide(1, "The problem", "Can a clinic afford to run its own ICD-10 model?")
 
-card(s, Inches(0.62), Inches(1.82), Inches(5.6),
-     "Dr. Findus, our startup in Berlin",
-     "German GPs code every consultation.\n"
-     "We propose, the physician confirms.\n"
-     "Reliability is the product.\n"
-     "Today it runs on hosted APIs.",
-     title_size=15, body_size=14, gap=6, accent=INK)
+txt(s, Inches(0.62), Inches(1.92), Inches(5.6), Inches(0.35),
+    "Dr. Findus, our startup in Berlin", 15, bold=True, gap=0)
+txt(s, Inches(0.62), Inches(2.34), Inches(5.6), Inches(1.5),
+    "German GPs code every consultation.\n"
+    "We propose, the physician confirms.\n"
+    "Reliability is the product.\n"
+    "Today it runs on hosted APIs.",
+    14, color=GREY, gap=6)
 
 txt(s, Inches(6.55), Inches(1.92), Inches(6.15), Inches(1.0),
     "Could it run on\nour own hardware?", 24, bold=True, color=ORANGE, gap=2)
@@ -276,18 +292,19 @@ txt(s, Inches(6.55), Inches(3.02), Inches(6.15), Inches(0.8),
     "Spanish case reports, ICD-10 coded, CC-BY 4.0.",
     13, color=GREY, gap=3)
 
-txt(s, Inches(0.62), Inches(4.08), Inches(5.9), Inches(0.35),
+txt(s, Inches(0.62), Inches(4.16), Inches(5.9), Inches(0.35),
     "The resource problem", 14, bold=True, color=ORANGE)
-txt(s, Inches(0.62), Inches(4.48), Inches(5.9), Inches(1.4),
+txt(s, Inches(0.62), Inches(4.56), Inches(5.9), Inches(1.4),
     "8 GB of weights at 4B before a single activation.\n"
     f"Median case {tok['p50']:,.0f} tokens, longest {tok['max']:,.0f}.\n"
     "One JAX program, lowered by XLA to CPU, GPU and TPU.", 15, gap=9)
 
 fig(s, "slide1-coverage.png", Inches(6.55), Inches(4.02), Inches(6.2))
 
-txt(s, Inches(0.62), Inches(6.42), Inches(12.0), Inches(0.7),
+hairline(s, Inches(0.62), Inches(6.14), Inches(12.05))
+txt(s, Inches(0.62), Inches(6.40), Inches(12.0), Inches(0.55),
     "Where does the time go, and what does it take to run this at all?",
-    22, bold=True)
+    23, bold=True)
 
 
 # ============================== 2. Approach ===================================
@@ -301,9 +318,17 @@ cols = [
     ("Storage",
      "gcsfuse CSI, implicit-dirs\n8 GB checkpoint from a bucket\nFile cache left as a knob"),
 ]
+# Three parallel aspects, so three columns is the right structure. Three identical
+# tinted boxes is not: it gives each the same weight as the storage path below, which
+# is the thing this slide is actually building towards.
+hairline(s, Inches(0.62), Inches(1.78), Inches(12.10))
 for i, (head, body) in enumerate(cols):
-    card(s, Inches(0.62 + i * 4.15), Inches(1.80), Inches(3.85), head, body,
-         title_size=16, body_size=13, gap=7)
+    x = Inches(0.62 + i * 4.15)
+    if i:
+        hairline(s, x - Inches(0.20), Inches(1.96), Inches(1.42), vertical=True)
+    txt(s, x, Inches(2.00), Inches(3.85), Inches(0.35), head, 16, bold=True,
+        color=ORANGE, gap=0)
+    txt(s, x, Inches(2.44), Inches(3.75), Inches(1.1), body, 13, color=GREY, gap=7)
 
 panel(s, Inches(0.62), Inches(3.82), Inches(12.10), Inches(0.66),
       fill=WHITE, edge=ORANGE_L)
@@ -387,63 +412,74 @@ fig(s, "slide4-sweep.png", Inches(0.62), Inches(4.42), Inches(7.55))
 stat(s, Inches(8.45), Inches(1.74), Inches(4.25), f"{load_ratio:.1f}x",
      "the throughput of an eight-chip v5e\nslice, from a single Hopper chip", big=52)
 
-card(s, Inches(8.45), Inches(3.52), Inches(4.25),
-     "Memory boundary",
-     f"GH200 fails between {bs_gpu} and {oom_gpu}\nv5e fails between {bs_tpu} and {oom_tpu}",
-     title_size=14, body_size=13.5, gap=4)
+hairline(s, Inches(8.45), Inches(3.46), Inches(4.25))
 
-card(s, Inches(8.45), Inches(5.02), Inches(4.25),
-     "The mitigation, controlled",
-     f"File cache on: checkpoint load\n{load_x:.1f}× faster, {wall_cut:.0f} % off wall clock.\n"
-     "Median step time unchanged to\nthe fourth decimal.",
-     title_size=14, body_size=13, gap=3)
+txt(s, Inches(8.45), Inches(3.68), Inches(4.25), Inches(0.34),
+    "Where each one runs out of memory", 14, bold=True, gap=0)
+txt(s, Inches(8.45), Inches(4.06), Inches(4.25), Inches(0.6),
+    f"GH200 between batch {bs_gpu} and {oom_gpu}\nv5e between batch {bs_tpu} and {oom_tpu}",
+    13.5, color=GREY, gap=4)
+
+hairline(s, Inches(8.45), Inches(5.02), Inches(4.25))
+
+txt(s, Inches(8.45), Inches(5.24), Inches(4.25), Inches(0.34),
+    "The mitigation, controlled", 14, bold=True, gap=0)
+txt(s, Inches(8.45), Inches(5.62), Inches(4.25), Inches(0.9),
+    f"Checkpoint load {load_x:.1f}× faster, {wall_cut:.0f} % off wall\n"
+    "clock, and median step time unchanged\nto the fourth decimal.",
+    13, color=GREY, gap=4)
 
 
 # ============================== 5. Conclusion =================================
 s = slide(5, "Conclusion", "The chip was never the bottleneck.")
 
-findings = [
-    (f"{compute_pct:.0f} %",
-     "of wall clock is arithmetic",
-     f"Of {bp['total_wall_s']:.0f} s, only {bp['steady_state_s']:.0f} s computes.\n"
-     f"The biggest single phase is\nreading the checkpoint: {load_pct:.0f} %."),
-    ("6.7×",
-     "more parameters, CPU stopped",
-     "0.6B to 4B did not make the CPU\n6.7× slower. XLA never finished\n"
-     "compiling; the kernel killed it\nat 31.5 GB."),
-    ("1 of 36",
-     "dependencies were TPU-bound",
-     "The GH200 sat idle behind an\nARM64 host, a QEMU segfault\n"
-     "and a registry 403. Swapping\none pin is the whole port."),
-]
-for i, (big, cap, body) in enumerate(findings):
-    x = Inches(0.62 + i * 4.15)
-    panel(s, x, Inches(1.80), Inches(3.85), Inches(2.50))
-    txt(s, x + Inches(0.28), Inches(1.94), Inches(3.3), Inches(0.7), big,
-        34 if i == 0 else 26, bold=True, color=ORANGE if i == 0 else INK, gap=0)
-    txt(s, x + Inches(0.28), Inches(2.56), Inches(3.35), Inches(0.45), cap, 12,
-        bold=True, gap=2)
-    txt(s, x + Inches(0.28), Inches(3.03), Inches(3.35), Inches(1.3), body, 11.5,
-        color=GREY, gap=2)
+# One number carries this slide. The other two findings are real but subordinate, and
+# giving all three the same tinted card made them all equally ignorable.
+txt(s, Inches(0.62), Inches(1.72), Inches(5.2), Inches(1.5),
+    f"{compute_pct:.0f}\u2009%", 96, bold=True, color=ORANGE, gap=0)   # thin space: a full one is a canyon at 96pt
+txt(s, Inches(0.70), Inches(3.34), Inches(5.0), Inches(0.4),
+    "of the wall clock is arithmetic", 19, bold=True, gap=0)
+txt(s, Inches(0.70), Inches(3.80), Inches(4.9), Inches(0.9),
+    f"Of {bp['total_wall_s']:.0f} s, {bp['steady_state_s']:.0f} s computes. The largest\n"
+    f"single phase is reading the checkpoint: {load_pct:.0f} %.",
+    13, color=GREY, gap=3)
 
-txt(s, Inches(0.62), Inches(4.62), Inches(5.9), Inches(0.35),
-    "Scaling recommendation", 15, bold=True, color=ORANGE)
-txt(s, Inches(0.62), Inches(5.00), Inches(5.9), Inches(1.4),
-    "Do not scale out. Amortise: raise batch only until\n"
-    "the chip is occupied, then attack fixed cost:\n"
-    "persistent compile caches, warm workers instead of\n"
-    "a pod per job, file cache on anything reading a\n"
-    "checkpoint.", 13, gap=2)
+hairline(s, Inches(6.05), Inches(1.90), Inches(2.45), vertical=True)
 
-card(s, Inches(6.80), Inches(4.46), Inches(5.90),
-     "What this means for Dr. Findus",
-     f"At batch 8, the slice's own best point: one GH200 runs\n"
-     f"{g8 / t8:.1f}× faster than eight TPU chips and costs "
-     f"{cost_ratio_4b:.0f}× less,\n${k4_gpu:.2f} against ${k4_tpu:.2f} per 1,000 steps.\n\n"
-     "Self-hosting is not the cost problem we assumed.\n"
-     "The real cost is fixed overhead per job.",
-     title_size=15, body_size=12.5, gap=2,
-     foot="TPU rate billed; the GH200 rate is a market proxy.")
+# The supporting pair: bold lead, one grey line. No container.
+for i, (lead, body) in enumerate([
+    ("6.7× more parameters, and the CPU stopped",
+     "Not 6.7× slower. XLA never finished compiling, and\n"
+     "without remat the kernel killed it at 31.5 GB."),
+    ("1 of 36 dependencies was TPU-bound",
+     "The GH200 sat idle behind an ARM64 host, a QEMU\n"
+     "segfault and a registry 403. One pin is the whole port."),
+]):
+    y = Inches(1.98 + i * 1.30)
+    txt(s, Inches(6.55), y, Inches(6.1), Inches(0.4), lead, 17, bold=True, gap=0)
+    txt(s, Inches(6.55), y + Inches(0.40), Inches(6.1), Inches(0.8), body, 13,
+        color=GREY, gap=3)
+
+hairline(s, Inches(0.62), Inches(4.86), Inches(12.05))
+
+txt(s, Inches(0.62), Inches(5.14), Inches(6.6), Inches(0.45),
+    "Do not scale out. Amortise.", 24, bold=True, gap=0)
+txt(s, Inches(0.64), Inches(5.66), Inches(6.5), Inches(0.9),
+    "Persistent compile cache  ·  warm workers, not a pod per job\n"
+    "file cache on anything that reads a checkpoint",
+    13, color=GREY, gap=3)
+
+# Cost stays, as a number rather than a paragraph.
+txt(s, Inches(8.30), Inches(5.10), Inches(1.5), Inches(0.6),
+    f"${k4_gpu:.2f}", 40, bold=True, color=INK, gap=0)
+txt(s, Inches(9.75), Inches(5.26), Inches(3.0), Inches(0.4),
+    f"against ${k4_tpu:.2f}", 17, bold=True, color=GREY, gap=0)
+txt(s, Inches(8.32), Inches(5.78), Inches(4.4), Inches(0.7),
+    f"per 1,000 steps at 4B, batch 8: one GH200\nagainst eight v5e chips, {cost_ratio_4b:.0f}× less",
+    12.5, color=GREY, gap=3)
+txt(s, Inches(8.32), Inches(6.52), Inches(4.4), Inches(0.3),
+    "TPU rate billed; the GH200 rate is a market proxy", 10.5, color=GREY,
+    italic=True, gap=0)
 
 txt(s, Inches(0.62), Inches(6.98), Inches(12.1), Inches(0.30),
     f"{len(recs)} measured runs  ·  "
@@ -459,18 +495,69 @@ print(f"wrote {OUT.relative_to(REPO)}, {n} slides, {OUT.stat().st_size // 1024} 
 # The card heights above are computed, but the y offsets are still written by hand,
 # so this is the check that catches a hand-written offset that stopped fitting.
 MARGIN = 0.14
+IN = Inches(1)
+
+
+CHAR_W = 0.52       # em per character, Helvetica Neue running text
+LINE_H = 1.15       # line box as a multiple of em
+
+
+def content_box(sh):
+    """The rectangle a shape's *content* actually occupies, in inches.
+
+    Deliberately a different estimate from :func:`lines`. That one is generous, because
+    under-estimating there clips text. This one aims to be *realistic*, because
+    over-estimating here invents overlaps that are not on the slide: a number set in a
+    4-inch box still only inks the inch and a half its glyphs need, and treating the
+    declared width as occupied would flag every caption sitting beside one.
+    """
+    left, top = sh.left / IN, sh.top / IN
+    declared_w, declared_h = sh.width / IN, sh.height / IN
+    if not (sh.has_text_frame and sh.text_frame.text.strip()):
+        return left, top, left + declared_w, top + declared_h
+
+    used_w, used_h = 0.0, 0.0
+    for para in sh.text_frame.paragraphs:
+        size = next((r.font.size.pt for r in para.runs if r.font.size), 13)
+        gap = para.space_after.pt if para.space_after else 0
+        text = "".join(r.text for r in para.runs)
+        em = size / 72.0
+        per_line = max(1, int(declared_w / (em * CHAR_W)))
+        n = max(1, -(-len(text) // per_line)) if text else 1
+        used_w = max(used_w, min(declared_w, len(text) * em * CHAR_W))
+        used_h += n * em * LINE_H + gap / 72.0
+    return left, top, left + max(used_w, 0.1), top + max(used_h, 0.1)
+
+
 bad = []
 for i, sl in enumerate(prs.slides, 1):
+    boxes = []
     for sh in sl.shapes:
         if sh.height == H or sh.shape_id in EXEMPT:
             continue
-        bottom = (sh.top + sh.height) / Inches(1)
-        right = (sh.left + sh.width) / Inches(1)
         label = (sh.text_frame.text.split("\n")[0][:34]
-                 if sh.has_text_frame else sh.shape_type)
-        if bottom > H / Inches(1) - MARGIN:
-            bad.append(f"  slide {i}: bottom {bottom:.2f}in  {label!r}")
-        if right > W / Inches(1) - MARGIN:
-            bad.append(f"  slide {i}: right {right:.2f}in  {label!r}")
-print("layout clean, nothing within %.2f in of an edge" % MARGIN if not bad
-      else "LAYOUT OVERFLOW:\n" + "\n".join(bad))
+                 if sh.has_text_frame else str(sh.shape_type))
+        l, t, r, b = content_box(sh)
+        if b > H / IN - MARGIN:
+            bad.append(f"  slide {i}: bottom {b:.2f}in  {label!r}")
+        if r > W / IN - MARGIN:
+            bad.append(f"  slide {i}: right {r:.2f}in  {label!r}")
+        if sh.has_text_frame and sh.text_frame.text.strip():
+            boxes.append((l, t, r, b, label))
+
+    # Text over text. The old deck ran a tinted card into the footer and nothing
+    # noticed, because the check only looked at the slide edges.
+    for j in range(len(boxes)):
+        for k in range(j + 1, len(boxes)):
+            al, at, ar, ab, an = boxes[j]
+            bl, bt, br, bb, bn = boxes[k]
+            ox = min(ar, br) - max(al, bl)
+            oy = min(ab, bb) - max(at, bt)
+            if ox > 0.06 and oy > 0.06:      # ignore hairline touches
+                bad.append(
+                    f"  slide {i}: {an!r} overlaps {bn!r} "
+                    f"by {ox:.2f} x {oy:.2f} in"
+                )
+
+print("layout clean: nothing within %.2f in of an edge, no text overlapping text" % MARGIN
+      if not bad else "LAYOUT PROBLEMS:\n" + "\n".join(bad))

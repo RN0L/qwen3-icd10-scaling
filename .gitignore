@@ -58,3 +58,6 @@ docker/images.env
 
 # Notebook checkpoints
 .ipynb_checkpoints/
+
+# Preview rasters from slides/preview.py — regenerate, do not commit.
+slides/preview/
