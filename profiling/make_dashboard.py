@@ -123,8 +123,18 @@ def ordered_runs(analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def find_sweep(analysis: Dict[str, Any], axis: str) -> Optional[Dict[str, Any]]:
-    entries = analysis["sweeps"].get(axis) or []
+    entries = find_sweeps(analysis, axis)
     return entries[0] if entries else None
+
+
+def find_sweeps(analysis: Dict[str, Any], axis: str) -> List[Dict[str, Any]]:
+    """Every sweep family on this axis, ordered cpu → gpu → tpu."""
+    entries = analysis["sweeps"].get(axis) or []
+    return sorted(
+        entries,
+        key=lambda e: BACKEND_ORDER.index(e.get("backend", "tpu"))
+        if e.get("backend", "tpu") in BACKEND_ORDER else 9,
+    )
 
 
 def gib(value: Optional[float]) -> Optional[float]:
@@ -308,61 +318,69 @@ def panel_utilization(ax, analysis: Dict[str, Any]) -> None:
 
 
 def panel_batch(ax, analysis: Dict[str, Any]) -> None:
-    """Panel 4 — batch size against throughput and peak HBM, with the OOM edge marked."""
-    entry = find_sweep(analysis, "batch_size")
-    if entry is None:
+    """Panel — batch size against throughput, per backend, with each OOM edge marked.
+
+    This panel used to plot one family with a twin memory axis, back when only the TPU had a
+    batch sweep. With two platforms measured the interesting quantity is no longer the level
+    but the *slope*: throughput rises with batch on the GPU and falls on the TPU, which is the
+    difference between a platform that rewards a bigger batch and one that does not. Peak
+    memory is annotated at each last-surviving point instead of getting its own axis, because
+    four lines in one panel is a chart nobody reads from the back of a room.
+    """
+    entries = find_sweeps(analysis, "batch_size")
+    if not entries:
         ax.set_axis_off()
         return
 
-    ok = [p for p in entry["points"] if p["status"] == "ok"]
-    oom = [p for p in entry["points"] if p["status"] == "oom"]
-    xs = [p["batch_size"] for p in ok]
+    all_x: List[int] = []
+    peak_throughput = 0.0
+    for entry in entries:
+        backend = entry.get("backend", "tpu")
+        colour = BACKEND_COLOUR.get(backend, "#4a4a4a")
+        ok = [p for p in entry["points"] if p["status"] == "ok"]
+        oom = [p for p in entry["points"] if p["status"] == "oom"]
+        if not ok:
+            continue
+        xs = [p["batch_size"] for p in ok]
+        ys = [p["tokens_per_s"] for p in ok]
+        all_x += xs + [p["batch_size"] for p in oom]
+        peak_throughput = max(peak_throughput, max(ys))
 
-    ax.plot(xs, [p["tokens_per_s"] for p in ok], marker="o", color=BACKEND_COLOUR["tpu"],
-            linewidth=2.2, markersize=7, label="Throughput (tok/s)")
+        ax.plot(xs, ys, marker="o", color=colour, linewidth=2.4, markersize=7,
+                label="%s" % backend.upper())
+
+        # The trend is the point, so state it on the line rather than in the caption.
+        if len(ok) >= 2:
+            change = (ys[-1] / ys[0] - 1.0) * 100.0
+            ax.annotate("%+.1f%% over the sweep" % change, (xs[-1], ys[-1]),
+                        textcoords="offset points", xytext=(-6, 12), ha="right",
+                        fontsize=ANNOT_SIZE, fontweight="bold", color=colour)
+
+        # Peak memory at the last configuration that survived, so the headroom is visible.
+        if ok[-1]["peak_pct"] is not None:
+            ax.annotate("%.0f%% mem at bs%d" % (ok[-1]["peak_pct"], ok[-1]["batch_size"]),
+                        (xs[-1], ys[-1]), textcoords="offset points", xytext=(-6, -16),
+                        ha="right", fontsize=ANNOT_SIZE - 1, color=colour)
+
+        for point in oom:
+            ax.axvline(point["batch_size"], color=colour, linewidth=2.2, alpha=0.55,
+                       linestyle=":")
+            ax.annotate("OOM\nbs%d" % point["batch_size"], (point["batch_size"], peak_throughput * 0.12),
+                        textcoords="offset points", xytext=(5, 0), ha="left", va="bottom",
+                        fontsize=ANNOT_SIZE - 0.5, fontweight="bold", color=colour)
+
     ax.set_xlabel("Batch size")
-    ax.set_ylabel("Tokens / s", color=BACKEND_COLOUR["tpu"])
-    ax.tick_params(axis="y", labelcolor=BACKEND_COLOUR["tpu"])
-    ax.set_ylim(0, max(p["tokens_per_s"] for p in ok) * 1.35)
-
-    right = ax.twinx()
-    right.plot(xs, [p["peak_pct"] for p in ok], marker="s", color="#c1442f", linewidth=2.2,
-               markersize=7, linestyle="--", label="Peak HBM (%)")
-    right.set_ylabel("Peak HBM occupancy (%)", color="#c1442f")
-    right.tick_params(axis="y", labelcolor="#c1442f")
-    right.set_ylim(0, 105)
-    right.grid(False)
-    right.spines["right"].set_visible(True)
-
-    for point in oom:
-        ax.axvline(point["batch_size"], color="#c1442f", linewidth=2.5, alpha=0.75)
-        ax.annotate(
-            "OOM at bs=%d\nHLO temporaries exceed HBM" % point["batch_size"],
-            xy=(point["batch_size"], max(p["tokens_per_s"] for p in ok) * 0.55),
-            xytext=(-12, 0), textcoords="offset points", ha="right", va="center",
-            fontsize=ANNOT_SIZE, fontweight="bold", color="#c1442f",
-        )
-
-    all_x = xs + [p["batch_size"] for p in oom]
+    ax.set_ylabel("Tokens / s")
+    ax.set_ylim(0, peak_throughput * 1.32)
     ax.set_xscale("log", base=2)
-    ax.set_xticks(all_x)
-    ax.set_xticklabels([str(x) for x in all_x])
-    ax.set_xlim(min(all_x) * 0.72, max(all_x) * 1.45)
-
-    scaling = entry["scaling"][0] if entry["scaling"] else None
-    subtitle = ""
-    if scaling:
-        subtitle = "\ndoubling the batch: throughput %+.1f%%" % (
-            (scaling["throughput_ratio"] - 1.0) * 100.0
-        )
-    ax.set_title("Batch size buys no throughput%s" % subtitle, loc="left")
-
-    handles = [
-        Line2D([], [], color=BACKEND_COLOUR["tpu"], marker="o", label="Throughput (tok/s)"),
-        Line2D([], [], color="#c1442f", marker="s", linestyle="--", label="Peak HBM (%)"),
-    ]
-    ax.legend(handles=handles, loc="lower left", framealpha=0.95, fontsize=TICK_SIZE - 0.5)
+    ordered_x = sorted(set(all_x))
+    ax.set_xticks(ordered_x)
+    ax.set_xticklabels([str(x) for x in ordered_x])
+    ax.set_xlim(min(ordered_x) * 0.78, max(ordered_x) * 1.30)
     ax.grid(axis="x", visible=False)
+    ax.set_title("Batch size pays on one accelerator and not the other\nQwen3-4B, seq 1024",
+                 loc="left")
+    ax.legend(loc="center left", framealpha=0.95, fontsize=TICK_SIZE - 0.5)
 
 
 def panel_seqlen(ax, analysis: Dict[str, Any]) -> None:
