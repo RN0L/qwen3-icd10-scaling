@@ -626,17 +626,32 @@ cluster with no trust path to the class registry.
   a realistic setting for this class of fine-tune; no system, customer or internal detail from
   any such setting appears here.
 
+**The corpus is a proxy for the motivating setting in two ways, and neither affects a single
+measurement in this report.** The case reports are in Spanish, and CodiEsp codes against
+**CIE-10-ES**, the Spanish national modification of ICD-10, a different code set from ICD-10-GM.
+You can see it in the data: `normalize_code` deliberately keeps ICD-10-PCS entries (`08j0xzz`)
+and CIE-O morphology codes (`8550/3`) that other national modifications do not carry.
+
+This bounds what the project could ever have claimed, not what it did claim. Step time, compile
+time, peak memory and queue latency do not depend on the language of the text; they depend on
+token counts, and the sequence length is fixed regardless of what the tokens say. A German
+corpus of the same shape would have produced the same infrastructure numbers. What a Spanish
+corpus *cannot* support is a claim about coding quality in another language or another code
+set, and this report makes no quality claim in any language.
+
 ### Repository map
 
 | Path | What it is |
 |---|---|
 | `docs/metrics-contract.md` | The schema every run record satisfies. Read this first |
+| `docs/analysis-schema.md` | The schema of the one derived file everything else is built from |
 | `docs/topology.md` | Full topology, storage path, and where each timestamp was taken |
 | `docs/bottleneck-analysis.md` | The derivation behind the diagnosis, and the alternatives it excludes |
 | `docs/backend-feasibility.md` | What would not run, and why: the CPU capacity limit and the GPU chain |
-| `results/*.json` | The measurements. Eight run records: 7 `ok`, 1 `oom` |
+| `results/*.json` | The measurements. **13 run records: 11 `ok`, 2 `oom`** |
 | `results/analysis.json` | Every derived number, generated |
 | `profiling/analyze.py` | The only place derived quantities are computed |
 | `profiling/make_dashboard.py` | The figure, generated from `analysis.json` |
+| `profiling/check_report.py` | Asserts the prose still matches the data. Run it after any re-measurement |
 | `slides/` | Five-slide deck, built from `results/` |
 | `src/`, `docker/`, `manifests/`, `scripts/` | Pipeline, images, manifests, orchestration |
