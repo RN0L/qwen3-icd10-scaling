@@ -1,6 +1,9 @@
 # Where does an LLM fine-tuning job actually spend its time?
 
 **ME344 final project. Option 2, custom workload.**
+**Leonard Arnold** ([@RN0L](https://github.com/RN0L)) and **Luis Hambuch**
+([@luishmb05](https://github.com/luishmb05)), Stanford ME344, summer 2026.
+
 LoRA fine-tuning of Qwen3 on CodiEsp (Spanish clinical case reports annotated with ICD-10
 diagnosis codes), run through one JAX/XLA code path on CPU, GPU and TPU backends, instrumented
 to answer one question:
