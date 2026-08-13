@@ -447,7 +447,7 @@ card(s, Inches(6.80), Inches(4.46), Inches(5.90),
 
 txt(s, Inches(0.62), Inches(6.98), Inches(12.1), Inches(0.30),
     f"{len(recs)} measured runs  ·  "
-    "github.com/RN0L/me344-qwen3-icd10-profiling",
+    "github.com/RN0L/qwen3-icd10-scaling",
     11, color=GREY, align=PP_ALIGN.CENTER)
 
 

@@ -524,8 +524,8 @@ that would deserve it.
 ## Reproducibility
 
 ```bash
-git clone https://github.com/RN0L/me344-qwen3-icd10-scaling
-cd me344-qwen3-icd10-scaling
+git clone https://github.com/RN0L/qwen3-icd10-scaling
+cd qwen3-icd10-scaling
 
 # The analysis half needs no cluster access. Every measurement is committed as JSON.
 python3 profiling/analyze.py --print      # stdlib only; writes results/analysis.json
@@ -595,5 +595,5 @@ cluster with no trust path to the class registry.
 | `results/analysis.json` | Every derived number, generated |
 | `profiling/analyze.py` | The only place derived quantities are computed |
 | `profiling/make_dashboard.py` | The figure, generated from `analysis.json` |
-| `slides/` | Five-slide deck |
+| `slides/` | Five-slide deck, built from `results/` |
 | `src/`, `docker/`, `manifests/`, `scripts/` | Pipeline, images, manifests, orchestration |
