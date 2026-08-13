@@ -470,9 +470,9 @@ txt(s, Inches(0.64), Inches(5.66), Inches(6.5), Inches(0.9),
     13, color=GREY, gap=3)
 
 # Cost stays, as a number rather than a paragraph.
-txt(s, Inches(8.30), Inches(5.10), Inches(1.5), Inches(0.6),
+txt(s, Inches(8.30), Inches(5.10), Inches(2.0), Inches(0.6),
     f"${k4_gpu:.2f}", 40, bold=True, color=INK, gap=0)
-txt(s, Inches(9.75), Inches(5.26), Inches(3.0), Inches(0.4),
+txt(s, Inches(10.15), Inches(5.28), Inches(2.6), Inches(0.4),
     f"against ${k4_tpu:.2f}", 17, bold=True, color=GREY, gap=0)
 txt(s, Inches(8.32), Inches(5.78), Inches(4.4), Inches(0.7),
     f"per 1,000 steps at 4B, batch 8: one GH200\nagainst eight v5e chips, {cost_ratio_4b:.0f}× less",
@@ -496,10 +496,31 @@ print(f"wrote {OUT.relative_to(REPO)}, {n} slides, {OUT.stat().st_size // 1024} 
 # so this is the check that catches a hand-written offset that stopped fitting.
 MARGIN = 0.14
 IN = Inches(1)
+WRAPS = []
 
 
-CHAR_W = 0.52       # em per character, Helvetica Neue running text
 LINE_H = 1.15       # line box as a multiple of em
+BOLD_FACTOR = 1.04  # Helvetica Bold runs about 4 % wider than the regular face
+
+# Helvetica advance widths, em/1000. One average per string is not enough: a headline is
+# mostly narrow lowercase (~0.5 em) while "$0.56" is all digits and currency (0.556 em),
+# so a single constant either lets a display number wrap or claims every headline does.
+_W = {" ": 278, ".": 278, ",": 278, ":": 278, ";": 278, "!": 278, "?": 556, "-": 333,
+      "(": 333, ")": 333, "/": 278, "%": 889, "\u00d7": 600, "$": 556, "+": 584,
+      "\u2009": 200, "\u00b7": 278, "\u2192": 600}
+_W.update({c: 556 for c in "0123456789"})
+_W.update(dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                   [667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833,
+                    722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611])))
+_W.update(dict(zip("abcdefghijklmnopqrstuvwxyz",
+                   [556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833,
+                    556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500])))
+
+
+def text_width_em(text, bold):
+    """Width of a string in em, from per-character advances rather than an average."""
+    total = sum(_W.get(ch, 556) for ch in text) / 1000.0
+    return total * (BOLD_FACTOR if bold else 1.0)
 
 
 def content_box(sh):
@@ -516,15 +537,29 @@ def content_box(sh):
     if not (sh.has_text_frame and sh.text_frame.text.strip()):
         return left, top, left + declared_w, top + declared_h
 
+    # A textbox does not lay text out edge to edge: PowerPoint insets it by 0.1in a side
+    # by default. Ignoring that is why the first pass called a 1.45in number a fit in a
+    # 1.50in box, and LibreOffice then wrapped it onto the line below.
+    tf = sh.text_frame
+    inset = ((tf.margin_left or 0) + (tf.margin_right or 0)) / IN
+    declared_w = max(0.1, declared_w - (inset if inset else 0.2))
+
     used_w, used_h = 0.0, 0.0
     for para in sh.text_frame.paragraphs:
         size = next((r.font.size.pt for r in para.runs if r.font.size), 13)
         gap = para.space_after.pt if para.space_after else 0
         text = "".join(r.text for r in para.runs)
         em = size / 72.0
-        per_line = max(1, int(declared_w / (em * CHAR_W)))
-        n = max(1, -(-len(text) // per_line)) if text else 1
-        used_w = max(used_w, min(declared_w, len(text) * em * CHAR_W))
+        bold = any(r.font.bold for r in para.runs)
+        natural = text_width_em(text, bold) * em
+        n = max(1, -(-natural // declared_w)) if text else 1
+        n = int(n)
+        # A single line that does not fit its box will wrap, and a wrapped display
+        # number lands on whatever sits below it. That is how "$0.56" became "$0.5"
+        # over a "6" in the first LibreOffice export.
+        if n > 1 and "\n" not in sh.text_frame.text and size >= 18:
+            WRAPS.append((sh, text, natural, declared_w))
+        used_w = max(used_w, min(declared_w, natural))
         used_h += n * em * LINE_H + gap / 72.0
     return left, top, left + max(used_w, 0.1), top + max(used_h, 0.1)
 
@@ -559,5 +594,9 @@ for i, sl in enumerate(prs.slides, 1):
                     f"by {ox:.2f} x {oy:.2f} in"
                 )
 
-print("layout clean: nothing within %.2f in of an edge, no text overlapping text" % MARGIN
+for sh, text, natural, declared in WRAPS:
+    bad.append(f"  display text {text!r} needs {natural:.2f}in in a {declared:.2f}in box: it will wrap")
+
+print("layout clean: nothing within %.2f in of an edge, no text overlapping text, "
+      "no display line wrapping" % MARGIN
       if not bad else "LAYOUT PROBLEMS:\n" + "\n".join(bad))
